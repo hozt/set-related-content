@@ -93,7 +93,6 @@ jQuery(document).ready(function($) {
             success: function(response) {
                 if (response.success) {
                     listItem.remove(); // Remove the item from the list on success
-                    console.log('Related post removed:', response.data);
                 } else {
                     console.error('Error removing related post:', response.data);
                 }
