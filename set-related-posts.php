@@ -3,7 +3,9 @@
 Plugin Name: Set Related Content
 Description: Allows adding multiple related posts to a post with sorting and title lookup.
 Version: 1.2
-Author: Your Name
+Author: Jeff Haug
+Author URI: https://hozt.com
+Text Domain: set-related-content
 */
 
 // Prevent direct access
@@ -19,6 +21,7 @@ class Set_Related_Content {
         add_action('wp_ajax_save_related_post', [$this, 'save_related_post']);
         add_action('wp_ajax_remove_related_post', [$this, 'remove_related_post']);
         add_action('wp_ajax_save_sorted_related_posts', [$this, 'save_sorted_related_posts']);
+        add_action('graphql_register_types', array($this, 'register_graphql_field'));
     }
 
     public function add_meta_box() {
@@ -151,6 +154,30 @@ class Set_Related_Content {
 
         update_post_meta($post_parent_id, '_related_posts', $post_ids);
         wp_send_json_success(__('Sorted related posts saved.', 'set-related-content'));
+    }
+
+    // register new register_graphql_field
+    public function register_graphql_field() {
+        register_graphql_field('Post', 'relatedPosts', [
+            'type' => ['list_of' => 'Post'],
+            'description' => __('List of related posts', 'set-related-content'),
+            'resolve' => function ($post) {
+                $related_post_ids = get_post_meta($post->ID, '_related_posts', true);
+                if (!$related_post_ids || !is_array($related_post_ids)) {
+                    return null;
+                }
+
+                $related_posts = [];
+                foreach ($related_post_ids as $related_post_id) {
+                    $related_post = get_post($related_post_id);
+                    if ($related_post && $related_post->post_status === 'publish') {
+                        $related_posts[] = new \WPGraphQL\Model\Post($related_post);
+                    }
+                }
+
+                return $related_posts;
+            }
+        ]);
     }
 }
 
