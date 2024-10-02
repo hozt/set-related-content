@@ -31,7 +31,7 @@ class Set_Related_Content {
             [$this, 'render_meta_box'],
             'post',
             'normal',
-            'high'
+            'low'
         );
     }
 
