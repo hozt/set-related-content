@@ -1,8 +1,8 @@
 <?php
 /*
 Plugin Name: Set Related Content
-Description: Allows adding multiple related posts to a post with sorting and title lookup.
-Version: 1.2
+Description: Allows adding multiple related posts and events to posts and podcast episodes with sorting and title lookup.
+Version: 1.6
 Author: Jeff Haug
 Author URI: https://hozt.com
 Text Domain: set-related-content
@@ -11,43 +11,96 @@ Text Domain: set-related-content
 // Prevent direct access
 if (!defined('ABSPATH')) exit;
 
-// Main plugin class
-class Set_Related_Content {
-    public function __construct() {
-        add_action('add_meta_boxes', [$this, 'add_meta_box']);
-        add_action('save_post', [$this, 'save_related_posts']);
+add_action('graphql_register_types', function () {
+    $post_types = ['post', 'podcast_episode'];
+    foreach ($post_types as $post_type) {
+        register_graphql_field($post_type, 'relatedPosts', [
+            'type' => ['list_of' => 'Post'],
+            'description' => 'Related posts',
+            'resolve' => function ($post, $args, $context, $info) {
+                $related_posts = get_post_meta($post->ID, '_related_posts', true);
+                if (!$related_posts) {
+                    return [];
+                }
+                $related_posts = array_map(function ($id) use ($context) {
+                    return \WPGraphQL\Data\DataSource::resolve_post_object($id, $context);
+                }, $related_posts);
+                return $related_posts;
+            }
+        ]);
+        register_graphql_field($post_type, 'relatedEvents', [
+            'type' => ['list_of' => 'Event'],
+            'description' => 'Related events',
+            'resolve' => function ($post, $args, $context, $info) {
+                $related_events = get_post_meta($post->ID, '_related_events', true);
+                if (!$related_events) {
+                    return [];
+                }
+                $related_events = array_map(function ($id) use ($context) {
+                    return \WPGraphQL\Data\DataSource::resolve_post_object($id, $context);
+                }, $related_events);
+                return $related_events;
+            }
+        ]);
+    }
+});
+
+class Set_Related_Content
+{
+    public function __construct()
+    {
+        add_action('add_meta_boxes', [$this, 'add_meta_boxes']);
+        add_action('save_post', [$this, 'save_related_content']);
         add_action('admin_enqueue_scripts', [$this, 'enqueue_admin_scripts']);
-        add_action('wp_ajax_search_posts', [$this, 'search_posts']);
-        add_action('wp_ajax_save_related_post', [$this, 'save_related_post']);
-        add_action('wp_ajax_remove_related_post', [$this, 'remove_related_post']);
-        add_action('wp_ajax_save_sorted_related_posts', [$this, 'save_sorted_related_posts']);
-        add_action('graphql_register_types', array($this, 'register_graphql_field'));
+        add_action('wp_ajax_search_content', [$this, 'search_content']);
+        add_action('wp_ajax_save_related_content', [$this, 'save_related_content_ajax']);
+        add_action('wp_ajax_remove_related_content', [$this, 'remove_related_content']);
+        add_action('wp_ajax_save_sorted_related_content', [$this, 'save_sorted_related_content']);
+        add_action('admin_footer', [$this, 'collapse_meta_boxes']);
     }
 
-    public function add_meta_box() {
-        add_meta_box(
-            'set_related_content',
-            __('Related Posts', 'set-related-content'),
-            [$this, 'render_meta_box'],
-            'post',
-            'normal',
-            'low'
-        );
+    public function add_meta_boxes()
+    {
+        $post_types = ['post', 'podcast_episode'];
+        foreach ($post_types as $post_type) {
+            add_meta_box(
+                'set_related_posts',
+                __('Related Posts', 'set-related-content'),
+                [$this, 'render_meta_box'],
+                $post_type,
+                'normal',
+                'default',
+                ['content_type' => 'post']
+            );
+            add_meta_box(
+                'set_related_events',
+                __('Related Events', 'set-related-content'),
+                [$this, 'render_meta_box'],
+                $post_type,
+                'normal',
+                'default',
+                ['content_type' => 'event']
+            );
+        }
     }
 
-    public function render_meta_box($post) {
+    public function render_meta_box($post, $metabox)
+    {
+        $content_type = $metabox['args']['content_type'];
         wp_nonce_field('set_related_content_nonce', 'set_related_content_nonce');
-        $related_posts = get_post_meta($post->ID, '_related_posts', true);
+        $related_content = get_post_meta($post->ID, "_related_{$content_type}s", true);
+        $has_content = !empty($related_content);
         ?>
-        <div id="set-related-content">
-            <input type="text" id="related-post-search" size="30" placeholder="<?php esc_attr_e('Search for posts...', 'set-related-content'); ?>">
-            <ul id="related-posts-list">
+        <div id="set-related-<?php echo esc_attr($content_type); ?>s" class="set-related-content" data-has-content="<?php echo $has_content ? 'true' : 'false'; ?>">
+            <input type="hidden" name="related_<?php echo esc_attr($content_type); ?>s" id="related-<?php echo esc_attr($content_type); ?>s-input" value="<?php echo esc_attr(implode(',', (array)$related_content)); ?>">
+            <input type="text" id="related-<?php echo esc_attr($content_type); ?>-search" size="30" placeholder="<?php esc_attr_e("Search for {$content_type}s...", 'set-related-content'); ?>">
+            <ul id="related-<?php echo esc_attr($content_type); ?>s-list" class="related-content-list">
                 <?php
-                if ($related_posts) {
-                    foreach ($related_posts as $related_post_id) {
-                        $related_post = get_post($related_post_id);
-                        if ($related_post) {
-                            echo '<li data-id="' . esc_attr($related_post_id) . '">' . esc_html($related_post->post_title) . ' <button style="font-size:0.8em;" class="remove" type="button">' . __('Remove', 'set-related-content') . '</button></li>';
+                if ($related_content) {
+                    foreach ($related_content as $related_id) {
+                        $related_item = get_post($related_id);
+                        if ($related_item) {
+                            echo '<li data-id="' . esc_attr($related_id) . '">' . esc_html($related_item->post_title) . ' <button style="font-size:0.8em;" class="remove" type="button">' . __('Remove', 'set-related-content') . '</button></li>';
                         }
                     }
                 }
@@ -57,33 +110,40 @@ class Set_Related_Content {
         <?php
     }
 
-    public function save_related_posts($post_id) {
-        if (!$this->verify_nonce()) return;
-        if (defined('DOING_AUTOSAVE') && DOING_AUTOSAVE) return;
-        if (!current_user_can('edit_post', $post_id)) return;
+    public function collapse_meta_boxes()
+    {
+        ?>
+        <script type="text/javascript">
+        jQuery(document).ready(function($) {
+            $('.postbox#set_related_posts, .postbox#set_related_events').each(function() {
+                var $metabox = $(this);
+                var $content = $metabox.find('.set-related-content');
+                var hasContent = $content.data('has-content');
 
-        $related_posts = isset($_POST['related_posts']) ? array_map('intval', $_POST['related_posts']) : [];
-        update_post_meta($post_id, '_related_posts', $related_posts);
+                if (!hasContent) {
+                    $metabox.addClass('closed');
+                }
+            });
+        });
+        </script>
+        <?php
     }
 
-    public function enqueue_admin_scripts($hook) {
+    public function enqueue_admin_scripts($hook)
+    {
         if (!in_array($hook, ['post.php', 'post-new.php'], true)) return;
         wp_enqueue_script('jquery-ui-sortable');
-        wp_enqueue_script('set-related-content-admin', plugin_dir_url(__FILE__) . 'js/set-related-content-admin.js', ['jquery', 'jquery-ui-sortable'], '1.2', true);
+        wp_enqueue_script('set-related-content-admin', plugin_dir_url(__FILE__) . 'js/set-related-content-admin.js', ['jquery', 'jquery-ui-sortable'], '1.3', true);
         wp_localize_script('set-related-content-admin', 'setRelatedContent', ['ajaxurl' => admin_url('admin-ajax.php')]);
     }
 
-    // Nonce verification
-    private function verify_nonce() {
-        return isset($_POST['nonce']) && wp_verify_nonce($_POST['nonce'], 'set_related_content_nonce');
-    }
-
-    // AJAX handler for post search
-    public function search_posts() {
+    public function search_content()
+    {
         $search = sanitize_text_field($_GET['search']);
+        $content_type = sanitize_text_field($_GET['content_type']);
         $args = [
             's' => $search,
-            'post_type' => 'post',
+            'post_type' => $content_type,
             'post_status' => 'publish',
             'posts_per_page' => 10,
         ];
@@ -102,82 +162,105 @@ class Set_Related_Content {
         wp_send_json($results);
     }
 
-    // AJAX handler to save the related post immediately
-    public function save_related_post() {
-        if (!$this->verify_nonce()) {
+    public function save_related_content_ajax()
+    {
+        if (!isset($_POST['nonce']) || !wp_verify_nonce($_POST['nonce'], 'set_related_content_nonce')) {
             wp_send_json_error(__('Nonce verification failed.', 'set-related-content'));
             return;
         }
 
-        $post_id = intval($_POST['post_id']);
+        $content_id = intval($_POST['content_id']);
         $post_parent_id = intval($_POST['post_parent_id']);
-        $related_posts = get_post_meta($post_parent_id, '_related_posts', true) ?: [];
+        $content_type = sanitize_text_field($_POST['content_type']);
+        $meta_key = "_related_{$content_type}s";
+        $related_content = get_post_meta($post_parent_id, $meta_key, true) ?: [];
 
-        if (!in_array($post_id, $related_posts, true)) {
-            $related_posts[] = $post_id;
-            update_post_meta($post_parent_id, '_related_posts', $related_posts);
-            wp_send_json_success(__('Related post added.', 'set-related-content'));
+        if (!in_array($content_id, $related_content, true)) {
+            $related_content[] = $content_id;
+            update_post_meta($post_parent_id, $meta_key, $related_content);
+            wp_send_json_success(__('Related content added.', 'set-related-content'));
         } else {
-            wp_send_json_error(__('Related post already exists.', 'set-related-content'));
+            wp_send_json_error(__('Related content already exists.', 'set-related-content'));
         }
     }
 
-    // AJAX handler to remove the related post immediately
-    public function remove_related_post() {
-        if (!$this->verify_nonce()) {
-            wp_send_json_error(__('Nonce verification failed.', 'set-related-content'));
+    public function save_related_content($post_id)
+    {
+        if (!isset($_POST['set_related_content_nonce']) || !wp_verify_nonce($_POST['set_related_content_nonce'], 'set_related_content_nonce')) {
+            return;
+        }
+        if (defined('DOING_AUTOSAVE') && DOING_AUTOSAVE) {
+            return;
+        }
+        if (!current_user_can('edit_post', $post_id)) {
             return;
         }
 
-        $post_id = intval($_POST['post_id']);
-        $post_parent_id = intval($_POST['post_parent_id']);
-        $related_posts = get_post_meta($post_parent_id, '_related_posts', true);
-
-        if ($related_posts && in_array($post_id, $related_posts, true)) {
-            $related_posts = array_diff($related_posts, [$post_id]);
-            update_post_meta($post_parent_id, '_related_posts', $related_posts);
-            wp_send_json_success(__('Related post removed.', 'set-related-content'));
-        } else {
-            wp_send_json_error(__('Related post not found.', 'set-related-content'));
-        }
-    }
-
-    // AJAX handler to save the sorted order of related posts
-    public function save_sorted_related_posts() {
-        if (!$this->verify_nonce()) {
-            wp_send_json_error(__('Nonce verification failed.', 'set-related-content'));
-            return;
-        }
-
-        $post_parent_id = intval($_POST['post_parent_id']);
-        $post_ids = isset($_POST['post_ids']) ? array_map('intval', $_POST['post_ids']) : [];
-
-        update_post_meta($post_parent_id, '_related_posts', $post_ids);
-        wp_send_json_success(__('Sorted related posts saved.', 'set-related-content'));
-    }
-
-    // register new register_graphql_field
-    public function register_graphql_field() {
-        register_graphql_field('Post', 'relatedPosts', [
-            'type' => ['list_of' => 'Post'],
-            'description' => __('List of related posts', 'set-related-content'),
-            'resolve' => function ($post) {
-                $related_post_ids = get_post_meta($post->ID, '_related_posts', true);
-                if (!$related_post_ids || !is_array($related_post_ids)) {
-                    return null;
-                }
-
-                $related_posts = [];
-                foreach ($related_post_ids as $related_post_id) {
-                    $related_post = get_post($related_post_id);
-                    if ($related_post && $related_post->post_status === 'publish') {
-                        $related_posts[] = new \WPGraphQL\Model\Post($related_post);
-                    }
-                }
-
-                return $related_posts;
+        // Handle related posts
+        if (isset($_POST['related_posts'])) {
+            $related_posts = json_decode(stripslashes($_POST['related_posts']), true);
+            if (is_array($related_posts)) {
+                $related_posts = array_map('intval', $related_posts);
+                update_post_meta($post_id, '_related_posts', $related_posts);
             }
-        ]);
+        }
+
+        // Handle related events
+        if (isset($_POST['related_events'])) {
+            $related_events = json_decode(stripslashes($_POST['related_events']), true);
+            if (is_array($related_events)) {
+                $related_events = array_map('intval', $related_events);
+                update_post_meta($post_id, '_related_events', $related_events);
+            }
+        }
+    }
+
+
+    public function remove_related_content()
+    {
+        if (!isset($_POST['nonce']) || !wp_verify_nonce($_POST['nonce'], 'set_related_content_nonce')) {
+            wp_send_json_error(__('Nonce verification failed.', 'set-related-content'));
+            return;
+        }
+
+        $content_id = intval($_POST['content_id']);
+        $post_parent_id = intval($_POST['post_parent_id']);
+        $content_type = sanitize_text_field($_POST['content_type']);
+        $meta_key = "_related_{$content_type}s";
+        $related_content = get_post_meta($post_parent_id, $meta_key, true);
+
+        if ($related_content && in_array($content_id, $related_content, true)) {
+            $related_content = array_diff($related_content, [$content_id]);
+            update_post_meta($post_parent_id, $meta_key, $related_content);
+            wp_send_json_success(__('Related content removed.', 'set-related-content'));
+        } else {
+            wp_send_json_error(__('Related content not found.', 'set-related-content'));
+        }
+    }
+
+    public function save_sorted_related_content()
+    {
+        if (!isset($_POST['nonce']) || !wp_verify_nonce($_POST['nonce'], 'set_related_content_nonce')) {
+            wp_send_json_error(__('Nonce verification failed.', 'set-related-content'));
+            return;
+        }
+
+        $post_parent_id = intval($_POST['post_parent_id']);
+        $content_ids = isset($_POST['content_ids']) ? array_map('intval', $_POST['content_ids']) : [];
+        $content_type = sanitize_text_field($_POST['content_type']);
+        $valid_types = ['post', 'event'];
+        if (!in_array($content_type, $valid_types)) {
+            $content_type = 'post'; // Default to 'post' if invalid
+        }
+        $meta_key = "_related_{$content_type}s";
+
+        update_post_meta($post_parent_id, $meta_key, $content_ids);
+        wp_send_json_success(__('Sorted related content saved.', 'set-related-content'));
+    }
+
+    private function verify_nonce()
+    {
+        return isset($_POST['set_related_content_nonce']) && wp_verify_nonce($_POST['set_related_content_nonce'], 'set_related_content_nonce');
     }
 }
 
