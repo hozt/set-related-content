@@ -2,7 +2,7 @@
 /*
 Plugin Name: Set Related Content
 Description: Allows adding multiple related posts and events to posts and podcast episodes with sorting and title lookup.
-Version: 1.6.1
+Version: 1.0.6
 Author: Jeff Haug
 Author URI: https://hozt.com
 Text Domain: set-related-content
@@ -12,7 +12,7 @@ Text Domain: set-related-content
 if (!defined('ABSPATH')) exit;
 
 add_action('graphql_register_types', function () {
-    $post_types = ['post', 'podcastEpisode'];
+    $post_types = ['post', 'podcast'];
     foreach ($post_types as $post_type) {
         register_graphql_field($post_type, 'relatedPosts', [
             'type' => ['list_of' => 'Post'],
@@ -61,7 +61,7 @@ class Set_Related_Content
 
     public function add_meta_boxes()
     {
-        $post_types = ['post', 'podcast_episode'];
+        $post_types = ['post', 'podcast_episode', 'podcast'];
         foreach ($post_types as $post_type) {
             add_meta_box(
                 'set_related_posts',
@@ -143,7 +143,7 @@ class Set_Related_Content
         $content_type = sanitize_text_field($_GET['content_type']);
         $args = [
             's' => $search,
-            'post_type' => $content_type,
+            'post_type' => $content_type === 'podcast' ? ['podcast', 'podcast_episode'] : $content_type,
             'post_status' => 'publish',
             'posts_per_page' => 10,
         ];
